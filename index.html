@@ -77,10 +77,23 @@
     </div>
 </div>
 
+<div id="categoryModal" class="modal">
+    <div class="modal-content" style="text-align: center;">
+        <h3>📦 Select Category</h3>
+        <p>Is this new item a Medkit or PPE?</p>
+        <div class="modal-btns" style="display: flex; flex-direction: column; gap: 10px; margin-top: 20px;">
+            <button id="chooseMedkit" class="btn-primary" style="background: #0ea5e9;">💊 Medkit Item</button>
+            <button id="choosePPE" class="btn-success">🛡️ PPE Item</button>
+            <button id="cancelCategory" class="btn-text">Cancel</button>
+        </div>
+    </div>
+</div>
+
       <section class="card public-only" id="requestSection">
     <div class="card-header-flex">
-        <h2 id="formTitle">📋 Item Request Form</h2>
+        <h2 id="formTitle">Medkit Request Form</h2>
         <button id="formToggleBtn" class="btn-icon" title="Switch to PPE Request">
+    <span id="toggleIcon">🛡️</span>
             <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor">
                 <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-5.5-2.5l7.5-7.5-7.5-7.5L5 2l9 9-9 9z"/>
             </svg>
