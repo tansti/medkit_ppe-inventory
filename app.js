@@ -1,6 +1,6 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-app.js";
 import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-auth.js";
-import { getDatabase, ref, set, push, onValue, remove, update, runTransaction, get } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-database.js";
+import { getDatabase, ref, set, push, onValue, remove, update, get } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-database.js";
 
 /* ================= FIREBASE CONFIG ================= */
 const firebaseConfig = {
@@ -17,222 +17,211 @@ const auth = getAuth(app);
 let allLogs = [];
 let lowStockItems = [];
 let currentLogView = "requests";
+let isPPEMode = false; // Controls the toggle state
+let pendingItemData = null; 
 
 /* ================= AUTH & UI STATE ================= */
 onAuthStateChanged(auth, user => {
     const isAdmin = !!user;
     document.body.classList.toggle("is-admin", isAdmin);
-
+    
     document.getElementById("logoutBtn").style.display = isAdmin ? "block" : "none";
     document.getElementById("loginTrigger").style.display = isAdmin ? "none" : "flex";
-
-    const employeeIcon = document.getElementById("employeeTrigger");
-    if (employeeIcon) employeeIcon.style.display = isAdmin ? "flex" : "none";
+    
+    const empTrigger = document.getElementById("employeeTrigger");
+    if (empTrigger) empTrigger.style.display = isAdmin ? "flex" : "none";
 
     if (isAdmin) {
         loadReports();
         loadEmployees();
-        document.getElementById("adminEmail").value = "";
-        document.getElementById("adminPass").value = "";
     }
+    applyStockFilter(); // Ensure stock shows correctly on login/logout
 });
 
-/* ================= INVENTORY SYNC ================= */
+/* ================= MODAL CONTROLS ================= */
+const setupModal = (triggerId, modalId, closeId) => {
+    const trigger = document.getElementById(triggerId);
+    const modal = document.getElementById(modalId);
+    const close = document.getElementById(closeId);
+    if (trigger && modal) trigger.onclick = () => modal.style.display = "flex";
+    if (close && modal) close.onclick = () => {
+        modal.style.display = "none";
+        if(modalId === "employeeModal") resetEmployeeForm();
+    };
+};
+
+setupModal("loginTrigger", "loginModal", "closeModal");
+setupModal("employeeTrigger", "employeeModal", "closeEmployeeModal");
+setupModal("lowStockAlert", "lowStockModal", "closeLowStockModal");
+
+/* ================= INVENTORY SYNC (Fixed Stock Display) ================= */
 onValue(ref(db, "inventory"), snapshot => {
     const data = snapshot.val() || {};
     const tbody = document.getElementById("inventoryBody");
     const select = document.getElementById("reqItemSelect");
-    const empSelect = document.getElementById("empItemSelect");
-
+    const lowStockList = document.getElementById("lowStockList");
+    
     tbody.innerHTML = "";
+    lowStockList.innerHTML = "";
     select.innerHTML = '<option value="">Select Item...</option>';
-    if (empSelect) empSelect.innerHTML = '<option value="">Select Item...</option>';
-
+    
     lowStockItems = [];
-
     Object.keys(data).forEach(key => {
         const item = data[key];
         const qty = parseInt(item.quantity) || 0;
         const isLow = qty <= 5;
-        if (isLow) lowStockItems.push({ name: item.name, quantity: qty });
+        
+        if (isLow) {
+            lowStockItems.push({ name: item.name, quantity: qty });
+            lowStockList.innerHTML += `<li><strong>${item.name}</strong>: Only ${qty} left</li>`;
+        }
 
+        // Logic to determine category
+        const isPPE = item.name.toLowerCase().includes('(ppe)') || ['mask', 'gloves', 'gown', 'shield', 'ppe'].some(w => item.name.toLowerCase().includes(w));
+        
         const tr = document.createElement("tr");
+        tr.className = isPPE ? "cat-ppe" : "cat-medkit";
+        
         tr.innerHTML = `
             <td>${item.name}</td>
-            <td><span class="stock-tag ${isLow ? 'low' : 'ok'}">${qty}</span></td>
+            <td style="text-align:center"><span class="stock-tag ${isLow ? 'low' : 'ok'}">${qty}</span></td>
             <td class="admin-only">
                 <button class="btn-edit btn-primary" data-id="${key}" style="background:var(--warning);padding:5px 10px;">Edit</button>
                 <button class="btn-delete btn-danger" data-id="${key}" style="padding:5px 10px;">Del</button>
             </td>`;
         tbody.appendChild(tr);
-
-        const opt = `<option value="${key}">${item.name}</option>`;
-        select.innerHTML += opt;
-        if (empSelect) empSelect.innerHTML += opt;
+        select.innerHTML += `<option value="${key}">${item.name}</option>`;
     });
 
-    // Low stock bell
+    applyStockFilter(); // Re-apply visibility after data update
     const bell = document.getElementById("lowStockAlert");
-    const showBell = auth.currentUser && lowStockItems.length > 0;
-    bell.style.display = showBell ? "flex" : "none";
-    bell.classList.toggle("lowstock-wiggle", showBell);
+    if(bell) bell.style.display = (auth.currentUser && lowStockItems.length > 0) ? "flex" : "none";
 });
 
-/* ================= INVENTORY BUTTONS (Delegation Fixed) ================= */
-document.getElementById("inventoryBody").addEventListener("click", async e => {
-    const btn = e.target;
-    const tr = btn.closest("tr");
-    if (!tr) return;
+/* ================= SWITCH FORM TOGGLE (Fixed) ================= */
+const toggleBtn = document.getElementById("formToggleBtn");
+if (toggleBtn) {
+    toggleBtn.onclick = () => {
+        isPPEMode = !isPPEMode;
+        
+        // Update UI Text
+        document.getElementById("formTitle").innerText = isPPEMode ? "🛡️ PPE Request Form" : "💊 Medkit Request Form";
+        document.getElementById("toggleIcon").innerText = isPPEMode ? "💊" : "🛡️";
+        
+        applyStockFilter();
+    };
+}
 
-    if (btn.classList.contains("btn-edit")) {
-        // Read values directly from row cells
-        const name = tr.cells[0].innerText;
-        const qty = tr.cells[1].innerText.replace(/\D/g, ""); // extract number
-        const id = btn.dataset.id;
+function applyStockFilter() {
+    const rows = document.querySelectorAll("#inventoryBody tr");
+    const isAdmin = document.body.classList.contains("is-admin");
 
-        document.getElementById("editItemId").value = id;
-        document.getElementById("itemName").value = name;
-        document.getElementById("itemQty").value = qty;
-        document.getElementById("saveBtn").innerText = "Update Item";
-
-    } else if (btn.classList.contains("btn-delete")) {
-        if (confirm("Delete this item?")) {
-            await remove(ref(db, `inventory/${btn.dataset.id}`));
+    rows.forEach(row => {
+        if (isAdmin) {
+            row.classList.remove("row-hidden"); // Admins see everything
+        } else {
+            const isPPE = row.classList.contains("cat-ppe");
+            // If PPEMode is true, show only PPE. Else show only Medkit.
+            if (isPPEMode) {
+                row.classList.toggle("row-hidden", !isPPE);
+            } else {
+                row.classList.toggle("row-hidden", isPPE);
+            }
         }
-    }
-});
-/* ================= INVENTORY SAVE/UPDATE ================= */
-document.getElementById("saveBtn").onclick = async () => {
-    const id = document.getElementById("editItemId").value || push(ref(db, "inventory")).key; // generate key if new
-    const name = document.getElementById("itemName").value.trim();
-    const qty = parseInt(document.getElementById("itemQty").value);
-
-    if (!name || isNaN(qty)) return alert("Enter item name and quantity");
-
-    try {
-        await update(ref(db, `inventory/${id}`), { 
-            name: name, 
-            quantity: qty 
-        });
-
-        alert("Inventory updated successfully!");
-        ["editItemId", "itemName", "itemQty"].forEach(i => document.getElementById(i).value = "");
-        document.getElementById("saveBtn").innerText = "Add / Update";
-    } catch (err) {
-        console.error("Inventory update failed:", err);
-        alert("Error saving item");
-    }
-};
-
-
+    });
+}
 
 /* ================= EMPLOYEE MANAGEMENT ================= */
 function loadEmployees() {
     onValue(ref(db, "employees"), snapshot => {
-        const tbody = document.querySelector("#employeeTable tbody");
-        tbody.innerHTML = "";
         const data = snapshot.val() || {};
-
-        Object.keys(data).forEach(id => {
-            const emp = data[id];
-            const tr = document.createElement("tr");
-            tr.innerHTML = `
-                <td>${emp.name}</td>
-                <td>${id}</td>
-                <td class="admin-only">
-                    <button class="btn-emp-edit btn-primary" data-id="${id}" style="padding:5px 10px;">Edit</button>
-                    <button class="btn-emp-del btn-danger" data-id="${id}" style="padding:5px 10px;">Del</button>
-                </td>`;
-            tbody.appendChild(tr);
+        const tbody = document.querySelector("#employeeTable tbody");
+        if(!tbody) return;
+        tbody.innerHTML = "";
+        Object.keys(data).forEach(key => {
+            const emp = data[key];
+            tbody.innerHTML += `
+                <tr>
+                    <td>${emp.name}</td>
+                    <td>${emp.id}</td>
+                    <td class="admin-only">
+                        <button class="btn-primary" onclick="window.editEmployee('${key}', '${emp.name}', '${emp.id}')" style="padding:2px 8px; background:var(--warning); margin-right:5px;">Edit</button>
+                        <button class="btn-danger" onclick="window.deleteEmployee('${key}')" style="padding:2px 8px;">×</button>
+                    </td>
+                </tr>`;
         });
     });
 }
 
-// Employee buttons delegation
-document.querySelector("#employeeTable tbody").addEventListener("click", async e => {
-    const btn = e.target;
-    const tr = btn.closest("tr");
-    if (!tr) return;
+window.editEmployee = (key, name, id) => {
+    document.getElementById("editEmpId").value = key;
+    document.getElementById("empNameAdmin").value = name;
+    document.getElementById("empIDAdmin").value = id;
+    document.getElementById("saveEmpBtn").innerText = "Update Employee";
+};
 
-    if (btn.classList.contains("btn-emp-edit")) {
-        const name = tr.cells[0].innerText;
-        const id = btn.dataset.id;
+window.deleteEmployee = (key) => {
+    if(confirm("Remove this employee?")) remove(ref(db, `employees/${key}`));
+};
 
-        document.getElementById("editEmpId").value = id;
-        document.getElementById("empIDAdmin").value = id;
-        document.getElementById("empNameAdmin").value = name;
-        document.getElementById("saveEmpBtn").innerText = "Update Employee";
+function resetEmployeeForm() {
+    document.getElementById("editEmpId").value = "";
+    document.getElementById("empNameAdmin").value = "";
+    document.getElementById("empIDAdmin").value = "";
+    document.getElementById("saveEmpBtn").innerText = "Add / Update";
+}
 
-    } else if (btn.classList.contains("btn-emp-del")) {
-        if (confirm("Delete employee?")) {
-            await remove(ref(db, `employees/${btn.dataset.id}`));
-        }
-    }
-});
-
-/* ================= ADMIN: SAVE EMPLOYEE ================= */
-document.getElementById("saveEmpBtn")?.addEventListener("click", async () => {
-    const oldId = document.getElementById("editEmpId").value;
-    const newId = document.getElementById("empIDAdmin").value.trim();
+document.getElementById("saveEmpBtn").onclick = async () => {
+    const key = document.getElementById("editEmpId").value;
     const name = document.getElementById("empNameAdmin").value.trim();
-    if (!newId || !name) return alert("Enter Name and ID");
-
-    try {
-        if (oldId && oldId !== newId) {
-            await remove(ref(db, `employees/${oldId}`));
-        }
-        await update(ref(db, `employees/${newId}`), { name, id: newId });
-        alert("Employee database updated successfully!");
-        ["editEmpId", "empNameAdmin", "empIDAdmin"].forEach(i => document.getElementById(i).value = "");
-        document.getElementById("saveEmpBtn").innerText = "Add / Update";
-    } catch (err) {
-        console.error("Update failed:", err);
-        alert("Error updating employee.");
-    }
-});
-
-/* ================= AUTH ================= */
-document.getElementById("loginTrigger").onclick = () => document.getElementById("loginModal").style.display = "flex";
-document.getElementById("closeModal").onclick = () => document.getElementById("loginModal").style.display = "none";
-document.getElementById("logoutBtn").onclick = () => signOut(auth);
-document.getElementById("loginBtn").onclick = async () => {
-    const email = document.getElementById("adminEmail").value;
-    const pass = document.getElementById("adminPass").value;
-    try {
-        await signInWithEmailAndPassword(auth, email, pass);
-        document.getElementById("loginModal").style.display = "none";
-    } catch {
-        alert("Login failed. Check credentials.");
-    }
+    const id = document.getElementById("empIDAdmin").value.trim();
+    if (!name || !id) return alert("Fill Name and ID");
+    
+    if (key) await update(ref(db, `employees/${key}`), { name, id });
+    else await push(ref(db, "employees"), { name, id });
+    resetEmployeeForm();
 };
 
-/* ================= LOW STOCK ALERT ================= */
-document.getElementById("lowStockAlert").onclick = () => {
-    const list = document.getElementById("lowStockList");
-    list.innerHTML = lowStockItems.map(i => `<li>${i.name} (Stock: ${i.quantity})</li>`).join("");
-    document.getElementById("lowStockModal").style.display = "flex";
+/* ================= REQUEST VALIDATION ================= */
+document.getElementById("reqBtn").onclick = async () => {
+    const itemId = document.getElementById("reqItemSelect").value;
+    const inputName = document.getElementById("reqName").value.trim();
+    const inputID = document.getElementById("reqID").value.trim();
+    const qty = parseInt(document.getElementById("reqQty").value);
+    const purpose = document.getElementById("reqPurpose").value.trim();
+
+    if (!itemId || !inputName || !inputID || isNaN(qty)) return alert("Fill all fields");
+
+    try {
+        const empSnap = await get(ref(db, "employees"));
+        const employees = empSnap.val() || {};
+        const isValid = Object.values(employees).some(e => 
+            e.name.toLowerCase() === inputName.toLowerCase() && e.id === inputID
+        );
+
+        if (!isValid) return alert("❌ Name and ID do not match registered employees.");
+
+        const itemRef = ref(db, `inventory/${itemId}`);
+        const itemSnap = await get(itemRef);
+        const itemData = itemSnap.val();
+
+        if (itemData.quantity < qty) return alert("Insufficient stock!");
+
+        await update(itemRef, { quantity: itemData.quantity - qty });
+        await push(ref(db, "transactions"), {
+            date: new Date().toISOString(),
+            requester: inputName,
+            empID: inputID,
+            itemName: itemData.name,
+            qty: qty,
+            purpose: purpose || "General Issue"
+        });
+        alert("✅ Request Granted!");
+        ["reqName", "reqID", "reqQty", "reqPurpose"].forEach(i => document.getElementById(i).value = "");
+    } catch (e) { alert("Error: " + e.message); }
 };
-document.getElementById("closeLowStockModal").onclick = () => document.getElementById("lowStockModal").style.display = "none";
 
-/* ================= EMPLOYEE MODAL ================= */
-const employeeTrigger = document.getElementById("employeeTrigger");
-if (employeeTrigger) {
-    employeeTrigger.onclick = () => document.getElementById("employeeModal").style.display = "flex";
-}
-document.getElementById("closeEmployeeModal")?.addEventListener("click", () => {
-    document.getElementById("employeeModal").style.display = "none";
-});
-
-/* ================= LOGS ================= */
-async function logAdminAction(action, item, details, qty) {
-    if (!auth.currentUser) return;
-    await push(ref(db, "admin_logs"), {
-        admin: auth.currentUser.email,
-        action, item, details, quantity: qty,
-        date: new Date().toISOString()
-    });
-}
-
+/* ================= REPORTS, FILTERING & CSV ================= */
 function loadReports() {
     const path = currentLogView === "requests" ? "transactions" : "admin_logs";
     onValue(ref(db, path), snapshot => {
@@ -243,86 +232,115 @@ function loadReports() {
 
 function renderFilteredReports() {
     const filter = document.getElementById("logFilterMonth").value;
-    const filteredLogs = allLogs.filter(l => !filter || (l.date && l.date.startsWith(filter)));
-    let html = `<table><thead><tr>
-        <th>Date</th>
-        <th>${currentLogView === 'requests' ? 'User' : 'Admin'}</th>
-        <th>${currentLogView === 'requests' ? 'Item' : 'Action'}</th>
-        <th>Qty</th>
-        <th>${currentLogView === 'requests' ? 'Purpose' : 'Item'}</th>
-    </tr></thead><tbody>`;
+    const container = document.getElementById("reportTableContainer");
+    const filtered = allLogs.filter(l => !filter || (l.date && l.date.startsWith(filter)));
 
-    if (!filteredLogs.length) html += `<tr><td colspan="5" style="text-align:center;">No records found</td></tr>`;
-    else filteredLogs.slice().reverse().forEach(l => {
+    if (filtered.length === 0) {
+        container.innerHTML = "<p style='text-align:center; padding:20px; color:#888;'>No logs found for this period.</p>";
+        return;
+    }
+
+    let html = `<table><thead><tr><th>Date</th><th>User</th><th>Action/Item</th><th>Detail</th></tr></thead><tbody>`;
+    filtered.slice().reverse().forEach(l => {
         html += `<tr>
             <td><small>${new Date(l.date).toLocaleDateString()}</small></td>
-            <td>${currentLogView === 'requests' ? l.requester : (l.admin || "").split("@")[0]}</td>
-            <td>${currentLogView === 'requests' ? l.itemName : l.action}</td>
-            <td>${currentLogView === 'requests' ? l.qty : l.quantity}</td>
-            <td>${currentLogView === 'requests' ? (l.purpose || "-") : l.item}</td>
+            <td>${l.admin || l.requester}</td>
+            <td><strong>${l.action ? `[${l.action}]` : 'REQ'}</strong> ${l.itemName}</td>
+            <td>Qty: ${l.qty} <br><small>${l.purpose || ''}</small></td>
         </tr>`;
     });
-
-    document.getElementById("reportTableContainer").innerHTML = html + "</tbody></table>";
+    container.innerHTML = html + "</tbody></table>";
 }
 
 document.getElementById("logTypeSelect").onchange = e => { currentLogView = e.target.value; loadReports(); };
 document.getElementById("logFilterMonth").onchange = renderFilteredReports;
 
-/* ================= CSV EXPORT ================= */
 document.getElementById("downloadCsvBtn").onclick = () => {
-    if (!allLogs.length) return alert("No data to export");
-    const headers = currentLogView === "requests" 
-        ? ["Date", "Requester", "Item", "Quantity", "Purpose"]
-        : ["Date", "Admin", "Action", "Item", "Quantity"];
+    if (allLogs.length === 0) return alert("No data to export");
+    const filter = document.getElementById("logFilterMonth").value;
+    const filtered = allLogs.filter(l => !filter || (l.date && l.date.startsWith(filter)));
+    
+    let csv = "Date,User,Action,Item,Qty,Purpose\n";
+    filtered.forEach(l => {
+        csv += `${new Date(l.date).toLocaleDateString()},${l.admin || l.requester},${l.action || 'Request'},${l.itemName},${l.qty},"${(l.purpose || "").replace(/"/g, '""')}"\n`;
+    });
 
-    const rows = allLogs.map(l => currentLogView === "requests" 
-        ? [l.date, l.requester, l.itemName, l.qty, l.purpose] 
-        : [l.date, l.admin, l.action, l.item, l.quantity]);
-
-    const csvContent = [headers, ...rows].map(e => e.join(",")).join("\n");
-    const blob = new Blob([csvContent], { type: 'text/csv' });
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `report_${currentLogView}.csv`;
-    a.click();
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `Report_${currentLogView}_${filter || 'All'}.csv`;
+    link.click();
 };
 
-/* ================= NAVBAR SCROLL ================= */
-let lastScrollTop = 0;
-window.addEventListener('scroll', () => {
-    const navbar = document.getElementById('mainNav');
-    let st = window.pageYOffset || document.documentElement.scrollTop;
-    if (st > lastScrollTop && st > 100) navbar.classList.add('nav-up');
-    else navbar.classList.remove('nav-up');
-    lastScrollTop = st <= 0 ? 0 : st;
+/* ================= INVENTORY EDIT/DELETE ================= */
+document.getElementById("inventoryBody").addEventListener("click", async e => {
+    const btn = e.target;
+    const id = btn.dataset.id;
+    if (btn.classList.contains("btn-edit")) {
+        const tr = btn.closest("tr");
+        document.getElementById("editItemId").value = id;
+        document.getElementById("itemName").value = tr.cells[0].innerText;
+        document.getElementById("itemQty").value = tr.cells[1].innerText.replace(/\D/g, "");
+        document.getElementById("saveBtn").innerText = "Update Item";
+        window.scrollTo({top: 0, behavior: 'smooth'});
+    } else if (btn.classList.contains("btn-delete")) {
+        const name = btn.closest("tr").cells[0].innerText;
+        if(confirm(`Delete ${name}?`)) {
+            await push(ref(db, "admin_logs"), {
+                date: new Date().toISOString(),
+                admin: auth.currentUser.email,
+                action: "Delete", itemName: name, qty: 0
+            });
+            await remove(ref(db, `inventory/${id}`));
+        }
+    }
 });
 
-/* ================= FORM TOGGLE LOGIC ================= */
-const toggleBtn = document.getElementById("formToggleBtn");
-const requestSection = document.getElementById("requestSection");
-const requestFields = document.getElementById("requestFields");
-const formTitle = document.getElementById("formTitle");
+/* ================= ADD/SAVE INVENTORY ================= */
+document.getElementById("saveBtn").onclick = async () => {
+    const id = document.getElementById("editItemId").value;
+    const name = document.getElementById("itemName").value.trim();
+    const qty = parseInt(document.getElementById("itemQty").value);
+    if (!name || isNaN(qty)) return alert("Invalid entry");
 
-let isPPEMode = false;
-
-toggleBtn.onclick = () => {
-    // Start fade out
-    requestFields.classList.add("form-hidden");
-
-    setTimeout(() => {
-        isPPEMode = !isPPEMode;
-        
-        // Toggle Class and Text
-        requestSection.classList.toggle("mode-ppe", isPPEMode);
-        formTitle.innerText = isPPEMode ? "🛡️ PPE Request Form" : "📋 Item Request Form";
-        toggleBtn.title = isPPEMode ? "Switch to MedKit Request" : "Switch to PPE Request";
-
-        // Clear fields on switch
-        ["reqName", "reqID", "reqQty", "reqPurpose"].forEach(i => document.getElementById(i).value = "");
-        
-        // Fade back in
-        requestFields.classList.remove("form-hidden");
-    }, 300);
+    if (id) {
+        await update(ref(db, `inventory/${id}`), { name, quantity: qty });
+        await push(ref(db, "admin_logs"), {
+            date: new Date().toISOString(),
+            admin: auth.currentUser.email,
+            action: "Edit", itemName: name, qty: qty
+        });
+        ["editItemId", "itemName", "itemQty"].forEach(i => document.getElementById(i).value = "");
+        document.getElementById("saveBtn").innerText = "Add / Update";
+        alert("Inventory Updated");
+    } else {
+        pendingItemData = { name, qty };
+        document.getElementById("categoryModal").style.display = "flex";
+    }
 };
+
+document.getElementById("chooseMedkit").onclick = () => finalizeAddition("Medkit");
+document.getElementById("choosePPE").onclick = () => finalizeAddition("PPE");
+document.getElementById("cancelCategory").onclick = () => document.getElementById("categoryModal").style.display = "none";
+
+async function finalizeAddition(category) {
+    const finalName = category === "PPE" ? `${pendingItemData.name} (PPE)` : pendingItemData.name;
+    const newKey = push(ref(db, "inventory")).key;
+    await update(ref(db, `inventory/${newKey}`), { name: finalName, quantity: pendingItemData.qty });
+    await push(ref(db, "admin_logs"), {
+        date: new Date().toISOString(),
+        admin: auth.currentUser.email,
+        action: "Add", itemName: finalName, qty: pendingItemData.qty
+    });
+    document.getElementById("categoryModal").style.display = "none";
+}
+
+/* ================= AUTH ACTIONS ================= */
+document.getElementById("loginBtn").onclick = async () => {
+    try {
+        await signInWithEmailAndPassword(auth, document.getElementById("adminEmail").value, document.getElementById("adminPass").value);
+        document.getElementById("loginModal").style.display = "none";
+    } catch { alert("Login failed"); }
+};
+document.getElementById("logoutBtn").onclick = () => signOut(auth);
