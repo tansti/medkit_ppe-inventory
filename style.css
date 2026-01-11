@@ -226,18 +226,32 @@ body.is-admin #inventoryTable { overflow: hidden; }
     background: rgba(59, 130, 246, 0.1);
     color: var(--primary);
     border-radius: 50%;
-    width: 40px;
-    height: 40px;
+    /* Increased size */
+    width: 55px; 
+    height: 55px;
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: all 0.3s ease;
+    transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+    cursor: pointer;
+    border: 2px solid transparent;
+}
+
+#toggleIcon {
+    /* Increased emoji size */
+    font-size: 28px; 
+    line-height: 1;
 }
 
 .btn-icon:hover {
     background: var(--primary);
-    color: white;
-    transform: rotate(180deg);
+    transform: scale(1.1) rotate(15deg); /* Slight tilt instead of full 180 */
+    box-shadow: 0 4px 15px rgba(59, 130, 246, 0.3);
+}
+
+/* Optional: Make the form title slightly larger to match */
+#formTitle {
+    font-size: 1.6rem;
 }
 
 /* Smooth Transition */
@@ -255,4 +269,7 @@ body.is-admin #inventoryTable { overflow: hidden; }
     display: none;
 }
 
-
+/* Only hide rows if we are NOT in admin mode */
+body:not(.is-admin) .row-hidden {
+    display: none;
+}
